@@ -294,29 +294,31 @@ __host__ void ChSystemGpu_impl::setupSphereDataStructures() {
 
     if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP ||
         gran_params->friction_mode == CHGPU_FRICTION_MODE::SINGLE_STEP) {
-        TRACK_VECTOR_RESIZE(contact_partners_map, 12 * nSpheres, "contact_partners_map", NULL_CHGPU_ID);
-        TRACK_VECTOR_RESIZE(contact_active_map, 12 * nSpheres, "contact_active_map", false);
+        TRACK_VECTOR_RESIZE(contact_partners_mapEVEN, 12 * nSpheres, "contact_partners_mapEVEN", NULL_CHGPU_ID);
+        TRACK_VECTOR_RESIZE(contact_partners_mapODD, 12 * nSpheres, "contact_partners_mapODD", NULL_CHGPU_ID);
     }
     if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
-        float3 null_history = {0., 0., 0.};
-        TRACK_VECTOR_RESIZE(contact_history_map, 12 * nSpheres, "contact_history_map", null_history);
+        float3 null_history = {0.f, 0.f, 0.f};
+        TRACK_VECTOR_RESIZE(contact_history_mapEVEN, 12 * nSpheres, "contact_history_mapEven", null_history);
+        TRACK_VECTOR_RESIZE(contact_history_mapODD, 12 * nSpheres, "contact_history_mapODD", null_history);
     }
-
+    TRACK_VECTOR_RESIZE(nCollisionsForEachBody, nSpheres, "nCollisionsForEachBody", 0);
+    
     // record normal contact force
     if (gran_params->recording_contactInfo == true) {
-        float3 null_force = {0.0f, 0.0f, 0.0f};
+        float3 null_force = {0.f, 0.f, 0.f};
         TRACK_VECTOR_RESIZE(normal_contact_force, 12 * nSpheres, "normal contact force", null_force);
     }
 
     // record friction force
     if (gran_params->recording_contactInfo == true && gran_params->friction_mode != CHGPU_FRICTION_MODE::FRICTIONLESS) {
-        float3 null_force = {0.0f, 0.0f, 0.0f};
+        float3 null_force = {0.f, 0.f, 0.f};
         TRACK_VECTOR_RESIZE(tangential_friction_force, 12 * nSpheres, "tangential contact force", null_force);
     }
 
     // record rolling friction torque
     if (gran_params->recording_contactInfo == true && gran_params->rolling_mode != CHGPU_ROLLING_MODE::NO_RESISTANCE) {
-        float3 null_force = {0.0f, 0.0f, 0.0f};
+        float3 null_force = {0.f, 0.f, 0.f};
         TRACK_VECTOR_RESIZE(rolling_friction_torque, 12 * nSpheres, "rolling friction torque", null_force);
     }
 
@@ -517,7 +519,7 @@ __host__ double ChSystemGpu_impl::AdvanceSimulation(float duration) {
         gpuErrchk(cudaDeviceSynchronize());
 
         if (gran_params->friction_mode != CHGPU_FRICTION_MODE::FRICTIONLESS) {
-            updateFrictionData<<<nBlocks, CUDA_THREADS_PER_BLOCK>>>(stepSize_SU, sphere_data, nSpheres, gran_params);
+            updateAngVels<<<nBlocks, CUDA_THREADS_PER_BLOCK>>>(stepSize_SU, sphere_data, nSpheres, gran_params);
             gpuErrchk(cudaPeekAtLastError());
             gpuErrchk(cudaDeviceSynchronize());
         }

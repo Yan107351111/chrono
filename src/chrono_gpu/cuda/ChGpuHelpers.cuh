@@ -131,75 +131,24 @@ inline __device__ unsigned int SDTripletID(const int trip[3], ChSystemGpu_impl::
 }
 
 // get an index for the current contact pair
-inline __device__ size_t findContactPairInfo(ChSystemGpu_impl::GranSphereDataPtr sphere_data,
+inline __device__ uint32_t findContactPairInfo(ChSystemGpu_impl::GranSphereDataPtr sphere_data,
                                              ChSystemGpu_impl::GranParamsPtr gran_params,
-                                             unsigned int body_A,
-                                             unsigned int body_B) {
-    // TODO this should be size_t everywhere
-    size_t body_A_offset = (size_t)MAX_SPHERES_TOUCHED_BY_SPHERE * body_A;
-    // first skim through and see if this contact pair is in the map
-    for (unsigned int contact_id = 0; contact_id < MAX_SPHERES_TOUCHED_BY_SPHERE; contact_id++) {
-        size_t contact_index = body_A_offset + contact_id;
-        if (sphere_data->contact_partners_map[contact_index] == body_B) {
-            // make sure this contact is marked active
-            sphere_data->contact_active_map[contact_index] = true;
+                                             unsigned int sphereID_A,
+                                             unsigned int sphereID_B) {
+    uint32_t body_A_offset = MAX_SPHERES_TOUCHED_BY_SPHERE * sphereID_A;
+    // try to find sphereID_B as being in contact w/ body_A
+    unsigned int nContactsInvolvingBodyA = sphere_data->nCollisionsForEachBody[sphereID_A];
+    for (uint8_t contact_id = 0; contact_id < nContactsInvolvingBodyA; contact_id++) {
+        uint32_t contact_index = body_A_offset + contact_id;
+        if (sphere_data->contact_partners_map[contact_index] == sphereID_B) {
             return contact_index;
-        }
-    }
-
-    // if we get this far, the contact pair isn't in the map now and we need to find an empty spot
-    for (unsigned int contact_id = 0; contact_id < MAX_SPHERES_TOUCHED_BY_SPHERE; contact_id++) {
-        size_t contact_index = body_A_offset + contact_id;
-        // check whether the slot is free right now
-        if (sphere_data->contact_partners_map[contact_index] == NULL_CHGPU_ID || sphere_data->contact_partners_map[contact_index] == body_B) {
-            // claim this slot for ourselves, atomically
-            // if the CAS returns NULL_CHGPU_ID, it means that the spot was free and we claimed it
-            unsigned int body_B_returned =
-                atomicCAS(sphere_data->contact_partners_map + contact_index, NULL_CHGPU_ID, body_B);
-            // did we get the spot? if so, claim it
-            if (NULL_CHGPU_ID == body_B_returned || body_B == body_B_returned) {
-                // make sure this contact is marked active
-                sphere_data->contact_active_map[contact_index] = true;
-                return contact_index;
-            }
         }
     }
 
     // if we got this far, we couldn't find a free contact pair. That is a violation of the 12-contacts theorem, so
     // we should probably give up now
-    ABORTABORTABORT("No available contact pair slots for body %u and body %u\n", body_A, body_B);
+    ABORTABORTABORT("No available contact pair slots for body %u and body %u\n", sphereID_A, sphereID_B);
     return NULL_CHGPU_ID;  // shouldn't get here anyways
-}
-
-// cleanup the contact data for a given body
-inline __device__ void cleanupContactMap(ChSystemGpu_impl::GranSphereDataPtr sphere_data,
-                                         unsigned int body_A,
-                                         ChSystemGpu_impl::GranParamsPtr gran_params) {
-    // index of the sphere into the big array
-    size_t body_A_offset = (size_t)MAX_SPHERES_TOUCHED_BY_SPHERE * body_A;
-
-    // get offsets into the global pointers
-    float3* contact_history = sphere_data->contact_history_map + body_A_offset;
-    unsigned int* contact_partners = sphere_data->contact_partners_map + body_A_offset;
-    not_stupid_bool* contact_active = sphere_data->contact_active_map + body_A_offset;
-
-    // sweep through each available contact slot and reset it if that slot wasn't active last timestep
-    for (unsigned int contact_id = 0; contact_id < MAX_SPHERES_TOUCHED_BY_SPHERE; contact_id++) {
-        // printf("contact map for sphere %u entry %u is other %u, active %u \t history is %f, %f, %f\n", body_A,
-        //        contact_id, contact_partners[contact_id], contact_active[contact_id], contact_history[contact_id].x,
-        //        contact_history[contact_id].y, contact_history[contact_id].z);
-        // if the contact is not active, reset it
-        if (contact_active[contact_id] == false) {
-            contact_partners[contact_id] = NULL_CHGPU_ID;
-            if (gran_params->friction_mode == chrono::gpu::CHGPU_FRICTION_MODE::MULTI_STEP) {
-                constexpr float3 null_history = {0, 0, 0};
-                contact_history[contact_id] = null_history;
-            }
-        } else {
-            // otherwise reset the active bit for the next step
-            contact_active[contact_id] = false;
-        }
-    }
 }
 
 inline __device__ bool checkLocalPointInSD(const int3& point, ChSystemGpu_impl::GranParamsPtr gran_params) {
@@ -212,36 +161,36 @@ inline __device__ bool checkLocalPointInSD(const int3& point, ChSystemGpu_impl::
 }
 
 // in integer, check whether a pair of spheres is in contact
-inline __device__ bool checkSpheresContacting_int(const int3& sphereA_pos,
+inline __device__ bool checkContactExistsAndInThisSD(const int3& sphereA_pos,
                                                   const int3& sphereB_pos,
                                                   unsigned int thisSD,
                                                   ChSystemGpu_impl::GranParamsPtr gran_params) {
     // Compute penetration to check for collision, we can use ints provided the diameter is small enough
-    int64_t penetration_int = 0;
+    int64_t center2centerDistance;
+    int64_t dummy;
 
-    // This avoids computing a square to figure our if collision or not
-    int64_t deltaX = (sphereA_pos.x - sphereB_pos.x);
-    int64_t deltaY = (sphereA_pos.y - sphereB_pos.y);
-    int64_t deltaZ = (sphereA_pos.z - sphereB_pos.z);
+    // Avoids computing a square to figure our if collision or not
+    dummy = sphereA_pos.x - sphereB_pos.x;
+    center2centerDistance = dummy * dummy;
 
-    penetration_int = deltaX * deltaX;
-    penetration_int += deltaY * deltaY;
-    penetration_int += deltaZ * deltaZ;
+    dummy = sphereA_pos.y - sphereB_pos.y;
+    center2centerDistance += dummy * dummy;
+
+    dummy = sphereA_pos.z - sphereB_pos.z;
+    center2centerDistance += dummy * dummy;
+
+    int64_t contact_threshold = (4 * (int64_t)gran_params->sphereRadius_SU) * (int64_t)gran_params->sphereRadius_SU;
+    bool contact_in_SD = (center2centerDistance < contact_threshold);
+    if (contact_in_SD == false) {
+        // no point in making more checks, return right away...
+        return false;
+    }
 
     // Here we need to check if the contact point is in this SD.
-
     // Take spatial average of positions to get position of contact point
-    // NOTE that we *do* want integer division since the SD-checking code uses ints anyways. Computing
-    // this as an int is *much* faster than float, much less double, on Conlain's machine
+    // NOTE that we *do* want integer division since the SD-checking code uses ints anyways. 
     int3 contact_pos = (sphereA_pos + sphereB_pos) / 2;
-
-    // NOTE this point is now local to the current SD
-
-    bool contact_in_SD = checkLocalPointInSD(contact_pos, gran_params);
-
-    const int64_t contact_threshold = (4 * (int64_t)gran_params->sphereRadius_SU) * (int64_t)gran_params->sphereRadius_SU;
-
-    return contact_in_SD && penetration_int < contact_threshold;
+    return checkLocalPointInSD(contact_pos, gran_params);
 }
 
 // NOTE: expects force_accum to be normal force only

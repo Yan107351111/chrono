@@ -20,6 +20,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cstdbool>
 
 #include "chrono_gpu/ChApiGpu.h"
 #include "chrono_gpu/ChGpuDefines.h"
@@ -149,9 +150,51 @@ class ChSystemGpu_impl {
 
         not_stupid_bool* sphere_fixed;  ///< Flags indicating whether or not a sphere is fixed
 
-        unsigned int* contact_partners_map;   ///< Contact partners for each sphere. Only in frictional simulations
-        not_stupid_bool* contact_active_map;  ///< Whether the frictional contact at an index is active
-        float3* contact_history_map;  ///< Tangential history for a given contact pair. Only for multistep friction
+        /// Set of contact partners for each sphere & tangential history vector for a given contact pair. Very important
+        /// in frictional simulations. The reason we have two versions is to eliminate race conditions when updating
+        /// history. For frictionaless simulation only used to keep track of the total number of contacts in the sys. 
+        unsigned int* contact_partners_map;
+        unsigned int* contact_partners_mapEVEN;
+        unsigned int* contact_partners_mapODD;
+
+        /// Swap the "current" map. We need to alternate from time-step to time-step to preserve old history while
+        /// building new history. We can't do bootstrapping, we would end up with race conditions. This function is
+        /// friction-history related.
+        inline void swap_current_contact_partners_maps() {
+            contact_partners_map =
+                (contact_partners_map == contact_partners_mapEVEN ? contact_partners_mapODD : contact_partners_mapEVEN);
+        }
+
+        /// method used to return pointer that stores information related to the how the friction history looked at the
+        /// previous time step.
+        inline unsigned int* get_old_partners_map() {
+            return (contact_partners_map == contact_partners_mapEVEN ? contact_partners_mapODD
+                                                                     : contact_partners_mapEVEN);
+        }
+
+        /// At end of a time step, nCollisionsForEachBody[i] says how many bodies body "i" is in contact with.
+        /// Used in conjunction with atomic operations on the GPU. Note that uint8_t would have been good enough but the
+        /// atomic ops prevent use of this type. Waste of memory here...
+        unsigned int* nCollisionsForEachBody;
+
+        float3* contact_history_map;
+        float3* contact_history_mapEVEN;
+        float3* contact_history_mapODD;
+
+        /// method used to return pointer that stores information related to the how the friction history looked at the
+        /// previous time step.
+        float3* get_old_historyFriction() {
+            return (contact_history_map == contact_history_mapEVEN ? contact_history_mapODD : contact_history_mapEVEN);
+        }
+
+        /// Swap the "current" tangential deformation histories. We need to alternate from time-step to time-step to
+        /// preserve old history while building new history. We can't do bootstrapping, we would end up with race
+        /// conditions.
+        /// This function is friction-history related.
+        inline void swap_contact_histories() {
+            contact_history_map =
+                (contact_history_map == contact_history_mapEVEN ? contact_history_mapODD : contact_history_mapEVEN);
+        }
 
         float3* normal_contact_force;       ///< Track normal contact force
         float3* tangential_friction_force;  ///< Track sliding friction force
@@ -250,6 +293,9 @@ class ChSystemGpu_impl {
         BC_offset_function_list.at(BD_WALL_ID_Z_BOT) = pos_fn;
         BC_offset_function_list.at(BD_WALL_ID_Z_TOP) = pos_fn;
     }
+
+    /// Return pointer to the map that contains the pairs of bodies in contact
+    inline unsigned int* get_contact_partners_map() const { return sphere_data->contact_partners_map; }
 
     // Copy back the subdomain device data and save it to a file for error checking on the priming kernel
     //// RADU: is this function going to be implemented?!?
@@ -462,12 +508,15 @@ class ChSystemGpu_impl {
     /// Fixity of each sphere
     std::vector<not_stupid_bool, cudallocator<not_stupid_bool>> sphere_fixed;
 
-    /// Set of contact partners for each sphere. Only used in frictional simulations
-    std::vector<unsigned int, cudallocator<unsigned int>> contact_partners_map;
-    /// Whether the frictional contact at an index is active
-    std::vector<not_stupid_bool, cudallocator<not_stupid_bool>> contact_active_map;
+    /// The number of other spheres each sphere comes in contact with. A uint8_t would have been enough, but there are
+    /// issues with atomic ops on uint8_t at this point
+    std::vector<unsigned int, cudallocator<unsigned int>> nCollisionsForEachBody;
+    /// Set of contact partners for each sphere. 
+    std::vector<unsigned int, cudallocator<unsigned int>> contact_partners_mapEVEN;
+    std::vector<unsigned int, cudallocator<unsigned int>> contact_partners_mapODD;
     /// Tracks the tangential history vector for a given contact pair. Only used in multistep friction
-    std::vector<float3, cudallocator<float3>> contact_history_map;
+    std::vector<float3, cudallocator<float3>> contact_history_mapEVEN;
+    std::vector<float3, cudallocator<float3>> contact_history_mapODD;
     /// Tracks the normal contact force for a given contact pair
     std::vector<float3, cudallocator<float3>> normal_contact_force;
     /// Tracks the tangential contact force for a given contact pair

@@ -169,13 +169,16 @@ void ChSystemGpu_impl::packSphereDataPointers() {
 
     if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP ||
         gran_params->friction_mode == CHGPU_FRICTION_MODE::SINGLE_STEP) {
-        sphere_data->contact_partners_map = contact_partners_map.data();
-        sphere_data->contact_active_map = contact_active_map.data();
+        sphere_data->contact_partners_mapEVEN = contact_partners_mapEVEN.data();
+        sphere_data->contact_partners_mapODD = contact_partners_mapODD.data();
     }
 
     if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
-        sphere_data->contact_history_map = contact_history_map.data();
+        sphere_data->contact_history_mapEVEN = contact_history_mapEVEN.data();
+        sphere_data->contact_history_mapODD = contact_history_mapODD.data();
     }
+
+    sphere_data->nCollisionsForEachBody = nCollisionsForEachBody.data();
 
     if (gran_params->recording_contactInfo == true) {
         sphere_data->normal_contact_force = normal_contact_force.data();
@@ -188,12 +191,6 @@ void ChSystemGpu_impl::packSphereDataPointers() {
             sphere_data->rolling_friction_torque = rolling_friction_torque.data();
         }
     }
-
-    // DN: had to comment this prefetch for now; crashing on Windows
-    //// force prefetch the sphere data pointer after update:
-    // int dev_ID;
-    // gpuErrchk(cudaGetDevice(&dev_ID));
-    // gpuErrchk(cudaMemPrefetchAsync(sphere_data, sizeof(*sphere_data), dev_ID));
 }
 
 void ChSystemGpu_impl::WriteFile(std::string ofile) const {
@@ -474,8 +471,8 @@ void ChSystemGpu_impl::WriteContactInfoFile(std::string ofile) const {
             unsigned int bodyAoffset = n * MAX_SPHERES_TOUCHED_BY_SPHERE;
             // go through all possible neighbors
             for (unsigned int neighborID = 0; neighborID < MAX_SPHERES_TOUCHED_BY_SPHERE; neighborID++) {
-                int theirSphereMappingID = bodyAoffset + neighborID;
-                int theirSphereID = contact_partners_map[theirSphereMappingID];
+                unsigned int theirSphereMappingID = bodyAoffset + neighborID;
+                unsigned int theirSphereID = get_contact_partners_map()[theirSphereMappingID];
                 // only write when bi < bj
                 if (theirSphereID >= n && theirSphereID < nSpheres) {
                     outstrstream << n << ", " << theirSphereID;
@@ -929,18 +926,21 @@ float3 ChSystemGpu_impl::GetParticleAngVelocity(int nSphere) const {
 
 // Return number of particle-particle contacts
 int ChSystemGpu_impl::GetNumContacts() const {
-    auto contact_itr = contact_partners_map.begin();
+    CHGPU_ERROR("Function is not implemented yet...\n");
     int total_nc = 0;
 
-    while (contact_itr != contact_partners_map.end()) {
-        int body_j = *contact_itr;
-        contact_itr++;
+    // to be uncommented later
+    //auto contact_itr = contact_partners_map.begin();
+    //while (contact_itr != contact_partners_map.end()) {
+    //    int body_j = *contact_itr;
+    //    contact_itr++;
 
-        if (body_j != -1) {
-            total_nc++;
-        }
-    }
+    //    if (body_j != -1) {
+    //        total_nc++;
+    //    }
+    //}
 
+    // DN question: is a fixed sphere registering its contact? the division by 2 below suggests so
     return total_nc / 2;
 }
 

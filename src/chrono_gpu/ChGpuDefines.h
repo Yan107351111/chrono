@@ -27,7 +27,7 @@ namespace gpu {
 typedef std::function<double3(float)> GranPositionFunction;
 
 /// Position function representing no motion or offset as a funtion of time.
-const GranPositionFunction GranPosFunction_default = [](float t) { return make_double3(0, 0, 0); };
+const GranPositionFunction GranPosFunction_default = [](float t) { return make_double3(0., 0., 0.); };
 
 /// Verbosity level of the system.
 enum class CHGPU_VERBOSITY { QUIET = 0, INFO = 1, METRICS = 2 };
@@ -75,7 +75,7 @@ constexpr size_t NUM_RESERVED_BC_IDS = 6;
 #define AVERAGE_SPHERES_PER_SD_Y_DIR 3.5
 /// The H-size of an SD should contain, on average, about these many spheres
 #define AVERAGE_SPHERES_PER_SD_Z_DIR 3.5
-/// Anticipated max number of DEs in an SD; used for setting aside memory ahead of time
+/// Anticipated max number of DEs touching an SD; used for setting aside memory ahead of time
 #define MAX_COUNT_OF_SPHERES_PER_SD 256
 /// Value that indicates non-valid ID. The assumption is that an ID is always a positive integer
 #define NULL_CHGPU_ID UINT_MAX

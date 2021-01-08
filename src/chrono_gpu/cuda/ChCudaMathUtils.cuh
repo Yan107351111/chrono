@@ -9,7 +9,7 @@
 // http://projectchrono.org/license-chrono.txt.
 //
 // =============================================================================
-// Authors: Conlain Kelly, Nic Olsen, Dan Negrut
+// Contributors: Conlain Kelly, Nic Olsen, Dan Negrut
 // =============================================================================
 
 #pragma once
@@ -96,7 +96,6 @@ inline __device__ int3 operator-(const int3& v1, const int3& v2) {
 inline __device__ int64_t3 operator-(const int64_t3& v1, const int64_t3& v2) {
     return make_longlong3(v1.x - v2.x, v1.y - v2.y, v1.z - v2.z);
 }
-
 // v1 + v2
 inline __device__ double3 operator+(const double3& v1, const double3& v2) {
     return make_double3(v1.x + v2.x, v1.y + v2.y, v1.z + v2.z);
@@ -116,10 +115,6 @@ inline __device__ int64_t3 operator+(const int64_t3& v1, const int64_t3& v2) {
 
 inline __device__ double3 int3_to_double3(const int3& v) {
     return make_double3(v.x, v.y, v.z);
-}
-
-inline __device__ float3 int3_to_float3(const int3& v) {
-    return make_float3(v.x, v.y, v.z);
 }
 
 inline __device__ double3 int64_t3_to_double3(const int64_t3& v) {
