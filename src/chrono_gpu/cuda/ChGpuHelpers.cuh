@@ -130,25 +130,25 @@ inline __device__ unsigned int SDTripletID(const int trip[3], ChSystemGpu_impl::
     return SDTripletID(trip[0], trip[1], trip[2], gran_params);
 }
 
-// get an index for the current contact pair
-inline __device__ uint32_t findContactPairInfo(ChSystemGpu_impl::GranSphereDataPtr sphere_data,
+// Get an index for the current contact pair. Note that the order is important: (A,B) leads to an index that is
+// different than (B,A).
+inline __device__ unsigned int findContactPairIndex(ChSystemGpu_impl::GranSphereDataPtr sphere_data,
                                              ChSystemGpu_impl::GranParamsPtr gran_params,
                                              unsigned int sphereID_A,
                                              unsigned int sphereID_B) {
-    uint32_t body_A_offset = MAX_SPHERES_TOUCHED_BY_SPHERE * sphereID_A;
+    unsigned int body_A_offset = MAX_SPHERES_TOUCHED_BY_SPHERE * sphereID_A;
     // try to find sphereID_B as being in contact w/ body_A
     unsigned int nContactsInvolvingBodyA = sphere_data->nCollisionsForEachBody[sphereID_A];
-    for (uint8_t contact_id = 0; contact_id < nContactsInvolvingBodyA; contact_id++) {
-        uint32_t contact_index = body_A_offset + contact_id;
+    for (unsigned int contact_id = 0; contact_id < nContactsInvolvingBodyA; contact_id++) {
+        unsigned int contact_index = body_A_offset + contact_id;
         if (sphere_data->contact_partners_map[contact_index] == sphereID_B) {
             return contact_index;
         }
     }
 
-    // if we got this far, we couldn't find a free contact pair. That is a violation of the 12-contacts theorem, so
-    // we should probably give up now
-    ABORTABORTABORT("No available contact pair slots for body %u and body %u\n", sphereID_A, sphereID_B);
-    return NULL_CHGPU_ID;  // shouldn't get here anyways
+    // if we got this far, it means that we didn't find Body B in the list of contacts for Body A. As such, return a
+    // value for the contact index that is conveying this information
+    return NULL_CHGPU_ID;  
 }
 
 inline __device__ bool checkLocalPointInSD(const int3& point, ChSystemGpu_impl::GranParamsPtr gran_params) {
@@ -241,51 +241,6 @@ inline __device__ float3 computeRollingAngAcc(ChSystemGpu_impl::GranSphereDataPt
     return delta_Ang_Acc;
 }
 
-// Compute single-step friction displacement
-// set delta_t for the displacement
-inline __device__ void computeSingleStepDisplacement(ChSystemGpu_impl::GranParamsPtr gran_params,
-                                                     const float3& rel_vel,
-                                                     float3& delta_t) {
-    delta_t = rel_vel * gran_params->stepSize_SU;
-    float ut = Length(delta_t);
-}
-
-// Compute multi-step friction displacement
-// set delta_t for the displacement
-inline __device__ void computeMultiStepDisplacement(ChSystemGpu_impl::GranParamsPtr gran_params,
-                                                    ChSystemGpu_impl::GranSphereDataPtr sphere_data,
-                                                    const size_t& contact_id,
-                                                    const float3& vrel_t,
-                                                    const float3& contact_normal,
-                                                    float3& delta_t) {
-    // get the tangential displacement so far
-    delta_t = sphere_data->contact_history_map[contact_id];
-    // add on what we have for this step
-    delta_t = delta_t + vrel_t * gran_params->stepSize_SU;
-
-    // project onto contact normal
-    float disp_proj = Dot(delta_t, contact_normal);
-    // remove normal projection
-    delta_t = delta_t - disp_proj * contact_normal;
-
-    // write back the updated displacement
-    sphere_data->contact_history_map[contact_id] = delta_t;
-}
-
-inline __device__ void updateMultiStepDisplacement(ChSystemGpu_impl::GranSphereDataPtr sphere_data,
-                                                   const size_t& contact_index,
-                                                   const float3& vrel_t,
-                                                   const float3& contact_normal,
-                                                   const float k_t,
-                                                   const float gamma_t,
-                                                   const float m_eff,
-                                                   const float force_model_multiplier,
-                                                   const float3& tangent_force) {
-    // Reverse engineer the delta_t from the clamped force and update the map
-    sphere_data->contact_history_map[contact_index] =
-        ((tangent_force / force_model_multiplier) + gamma_t * m_eff * vrel_t) / -k_t;
-}
-
 // compute friction forces for a contact
 // returns tangent force including hertz factor, clamped and all
 inline __device__ float3 computeFrictionForces(ChSystemGpu_impl::GranParamsPtr gran_params,
@@ -301,12 +256,21 @@ inline __device__ float3 computeFrictionForces(ChSystemGpu_impl::GranParamsPtr g
                                                const float3& contact_normal) {
     float3 delta_t = {0.f, 0.f, 0.f};
 
-    if (gran_params->friction_mode == CHGPU_FRICTION_MODE::SINGLE_STEP) {
-        computeSingleStepDisplacement(gran_params, vrel_t, delta_t);
-    } else if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
-        // TODO optimize this if we already have the contact ID
-        // Also updates tangential creep
-        computeMultiStepDisplacement(gran_params, sphere_data, contact_index, vrel_t, contact_normal, delta_t);
+    if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
+        // get the tangential displacement so far
+        delta_t = sphere_data->contact_history_map[contact_index];
+        // add on what we have for this step
+        delta_t = delta_t + vrel_t * gran_params->stepSize_SU;
+
+        // project onto contact normal; then remove normal projection
+        float disp_proj = Dot(delta_t, contact_normal);
+        delta_t = delta_t - disp_proj * contact_normal;
+
+        // write back the updated micro-displacement; to be used at next time step
+        sphere_data->contact_history_map[contact_index] = delta_t;
+    } else {
+        // getting here means we're one CHGPU_FRICTION_MODE::SINGLE_STEP
+        delta_t = vrel_t * gran_params->stepSize_SU;
     }
 
     float3 tangent_force = force_model_multiplier * (-k_t * delta_t - gamma_t * m_eff * vrel_t);
@@ -324,15 +288,16 @@ inline __device__ float3 computeFrictionForces(ChSystemGpu_impl::GranParamsPtr g
         // Scale tangent_force to coulomb condition and use stiffness portion of that to clamp displacement
         tangent_force = tangent_force * ft_max / ft;  // TODO stability
         if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
-            updateMultiStepDisplacement(sphere_data, contact_index, vrel_t, contact_normal, k_t, gamma_t, m_eff,
-                                        force_model_multiplier, tangent_force);
+            // Reverse engineer the delta_t from the clamped force and update the map
+            sphere_data->contact_history_map[contact_index] =
+                ((tangent_force / force_model_multiplier) + gamma_t * m_eff * vrel_t) / -k_t;
         }
     }
 
     return tangent_force;
 }
 
-// overload for if the body ids are given rather than contact id
+// overloaded function; used when the body ids are given rather than contact id
 inline __device__ float3 computeFrictionForces(ChSystemGpu_impl::GranParamsPtr gran_params,
                                                ChSystemGpu_impl::GranSphereDataPtr sphere_data,
                                                unsigned int body_A_index,
@@ -347,10 +312,16 @@ inline __device__ float3 computeFrictionForces(ChSystemGpu_impl::GranParamsPtr g
                                                const float3& contact_normal) {
     size_t contact_id = 0;
 
-    // if multistep, compute contact id, otherwise we don't care anyways
+    // if multistep, compute contact id; otherwise its value is not relevant, useless for one-step friction
     if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
-        contact_id = findContactPairInfo(sphere_data, gran_params, body_A_index, body_B_index);
+        contact_id = findContactPairIndex(sphere_data, gran_params, body_A_index, body_B_index);
     }
+#ifdef DEBUG
+    if (contact_id == NULL_CHGPU_ID) {
+        ABORTABORTABORT(
+            "C::GPU error: Attempting to compute friction force between two bodies that are not in contact.\n");
+    }
+#endif
     return computeFrictionForces(gran_params, sphere_data, contact_id, static_friction_coeff, k_t, gamma_t,
                                  force_model_multiplier, m_eff, normal_force, rel_vel, contact_normal);
 }

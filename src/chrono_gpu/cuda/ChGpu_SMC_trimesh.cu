@@ -469,7 +469,12 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
     // Figure our the number of blocks that need to be launched to cover the box
     unsigned int nBlocks = (nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
 
-    // Settling simulation loop.
+    // Number of blocks required to tend to curating friction history
+    unsigned int nBlocksFrictionHistory =
+        (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
+    seedFrictionHistory<<<nBlocksFrictionHistory, CUDA_THREADS_PER_BLOCK>>>(nSpheres, sphere_data);
+
+    // Set up simulation loop.
     float duration_SU = (float)(duration / TIME_SU2UU);
     unsigned int nsteps = (unsigned int)std::round(duration_SU / stepSize_SU);
 
@@ -558,6 +563,21 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
             gpuErrchk(cudaPeekAtLastError());
             gpuErrchk(cudaDeviceSynchronize());
         }
+
+        if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
+            // before erasing: recent becomes old; old becomes current
+            sphere_data->swap_contact_histories();
+            sphere_data->swap_current_contact_partners_maps();
+
+            // purge the current info, to start next step with clean slate to produce the new contacts
+            curateFrictionHistoryAposteriori<<<nBlocksFrictionHistory, CUDA_THREADS_PER_BLOCK>>>(
+                nSpheres, sphere_data->nCollisionsForEachBody, sphere_data->contact_partners_map,
+                sphere_data->contact_history_map);
+            gpuErrchk(cudaPeekAtLastError());
+            gpuErrchk(cudaDeviceSynchronize());
+        }
+
+
 
         runSphereBroadphase();
 

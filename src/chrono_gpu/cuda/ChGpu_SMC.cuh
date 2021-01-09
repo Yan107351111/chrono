@@ -11,7 +11,7 @@
 // Holds internal functions and kernels for running a sphere-sphere timestep
 //
 // =============================================================================
-// Authors: Conlain Kelly, Nic Olsen, Dan Negrut
+// Contributors: Conlain Kelly, Nic Olsen, Dan Negrut
 // =============================================================================
 
 #pragma once
@@ -614,8 +614,10 @@ static __global__ void determineContactPairs(ChSystemGpu_impl::GranSphereDataPtr
     // Note that if we have more threads than bodies, some effort gets wasted.
     unsigned int bodyA = threadIdx.x;
 
-    // Body A in this SD looks at each other body B in the SD and determines whether that body B is touching it
+    // Body A in this SD looks at each other body B in the SD and determines whether that body B is touching body A
     if (bodyA < spheresTouchingThisSD) {
+        unsigned int bodyA_sphereID = sphIDs[bodyA];
+        unsigned int startingOffset = MAX_SPHERES_TOUCHED_BY_SPHERE * bodyA_sphereID;
         unsigned int ncontacts;
         for (unsigned char bodyB = 0; bodyB < spheresTouchingThisSD; bodyB++) {
             if (bodyA == bodyB || (sphFixed[bodyA] && sphFixed[bodyB])) {
@@ -629,22 +631,107 @@ static __global__ void determineContactPairs(ChSystemGpu_impl::GranSphereDataPtr
             if (!active_contact)
                 continue;
 
+            unsigned int bodyB_sphereID = sphIDs[bodyB];
             // Note that "ncontacts" contains the *OLD* # of contacts, before adding this one associated w/ body B.
             // Also, note that it's a waste to store "ncontacts" as an unsigned int, but atomicAdd doesn't work with
-            // uint8_t, which is a type that would suffice. 
+            // uint8_t, which is a type that would suffice.
             // Note that what gets atomicADD-incremented is the collection of contacts associated with body A
-            ncontacts = atomicAdd(sphere_data->nCollisionsForEachBody + sphIDs[bodyA], 1);
-            sphere_data->contact_partners_map[ncontacts] = sphIDs[bodyB];
+            ncontacts = atomicAdd(sphere_data->nCollisionsForEachBody + bodyA_sphereID, 1);  // reserving a spot...
+            sphere_data->contact_partners_map[startingOffset + ncontacts] = bodyB_sphereID;
 #ifdef DEBUG
-            ncontacts++; // see comment above why this "++"
-            if (ncontacts >= MAX_SPHERES_TOUCHED_BY_SPHERE) {
-                ABORTABORTABORT("Sphere %u touching more than 12 spheres.\n", sphIDs[bodyA]);
+            // to understand why "MAX_SPHERES_TOUCHED_BY_SPHERE-1", think what the atomicAdd returns
+            if (ncontacts >= MAX_SPHERES_TOUCHED_BY_SPHERE - 1) {
+                ABORTABORTABORT("Sphere %u touching more than 12 spheres.\n", bodyA_sphereID);
             }
 #endif
-        }
+            // make sure the contact history is now placed in the right location; for this, we need information from the
+            // previous time step.
+            unsigned int* previous_partners_map;
+            float3* currentHistoryMap;
+            float3* previousHistoryMap;
+            if (sphere_data->contact_partners_map == sphere_data->contact_partners_mapEVEN) {
+                // we're in even mode
+                currentHistoryMap = sphere_data->contact_history_mapEVEN;
+                previousHistoryMap = sphere_data->contact_history_mapODD;
+                previous_partners_map = sphere_data->contact_partners_mapODD;
+            } else {
+                // we're in odd mode
+                currentHistoryMap = sphere_data->contact_history_mapODD;
+                previousHistoryMap = sphere_data->contact_history_mapEVEN;
+                previous_partners_map = sphere_data->contact_partners_mapEVEN;
+            }
+
+            for (unsigned int offset = 0; offset < MAX_SPHERES_TOUCHED_BY_SPHERE; offset++) {
+                unsigned int potentialSphere = previous_partners_map[startingOffset + offset];
+                if (potentialSphere == bodyB_sphereID) {
+                    // we have a "hit"; body_B was in contact with body_A at the previous time step
+                    currentHistoryMap[startingOffset + ncontacts] = previousHistoryMap[startingOffset + offset];
+                    break;
+                } else if (potentialSphere == NULL_CHGPU_ID) {
+                    // we exhausted the list of contacts at the previous time step for body_A; we didn't find body_B in
+                    // this list, which means that (body_A,body_B) is a new contact pair that has just been established.
+                    // As such, the micro-displacement is zero.
+                    currentHistoryMap[startingOffset + ncontacts] = make_float3(0.f, 0.f, 0.f);
+                    break;
+                }
+            }  // end looking in the previous list of contacts
+        }      // done checking the bodies in this SD
     }
 }
 
+/// <summary>
+/// At the end of each integration step, when multi-step friction is used, the micro-displacement history needs to be
+/// curated. The older history is deleted, and the latest micro-displacements are labelled as "old". The same sort of
+/// trick is done for the collection of contact pairs.
+/// </summary>
+/// <param name="nSpheres">number of spheres in the sim</param> 
+/// <param name="nCollisionsForEachBody"> array with the number of contacts each body enages in</param>
+/// <param name="contact_partners_map">array that contains for body A all the bodies body A comes in contact with</param>
+/// <param name="contact_history_map">array of micro-displacements used to compute the friction force</param>
+/// <returns></returns>
+static __global__ void curateFrictionHistoryAposteriori(unsigned int nSpheres,
+                                                        unsigned int* nCollisionsForEachBody,
+                                                        unsigned int* contact_partners_map,
+                                                        float3* contact_history_map) {
+    unsigned int offset = threadIdx.x + blockIdx.x * blockDim.x;
+
+    // reset the number of active contacts for each body to zero
+    if (offset < nSpheres)
+        nCollisionsForEachBody[offset] = 0;
+
+    // clean up all the contact partners bodies; set to illegal value
+    // zero out the tangential micro-deformation at the point of contact
+    unsigned int sizeContactPairsArray = MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres;
+    if (offset < sizeContactPairsArray) {
+        contact_partners_map[offset] = NULL_CHGPU_ID;
+        contact_history_map[offset] = make_float3(0.f, 0.f, 0.f);
+    }
+}
+
+/// <summary>
+/// Kernel populates the data structures with the right data at the beginning of the simulation, when there is no info
+/// about contact pairs and contact micro-displacements
+/// </summary>
+/// <param name="nSpheres">number of spheres in the sim</param>
+/// <param name="sphere_data">datastructure that holds all the pointers to system data</param>
+/// <returns></returns>
+static __global__ void seedFrictionHistory(unsigned int nSpheres, ChSystemGpu_impl::GranSphereDataPtr sphere_data) {
+    unsigned int offset = threadIdx.x + blockIdx.x * blockDim.x;
+
+    // reset the number of active contacts for each body to zero
+    if (offset < nSpheres)
+        sphere_data->nCollisionsForEachBody[offset] = 0;
+
+    // clean up all the contact partners bodies; set to illegal value
+    // zero out the tangential micro-deformation at the point of contact
+    unsigned int sizeContactPairsArray = MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres;
+    if (offset < sizeContactPairsArray) {
+        sphere_data->contact_partners_mapEVEN[offset] = NULL_CHGPU_ID;
+        sphere_data->contact_partners_mapODD[offset] = NULL_CHGPU_ID;
+        sphere_data->contact_history_mapEVEN[offset] = make_float3(0.f, 0.f, 0.f);
+        sphere_data->contact_history_mapODD[offset] = make_float3(0.f, 0.f, 0.f);
+    }
+}
 /// Compute normal forces for a contacting pair
 // returns the normal force and sets the reciplength, tangent velocity, and delta_r
 // delta_r is direction of normal force on me
@@ -736,16 +823,17 @@ static __global__ void computeSphereContactForces(ChSystemGpu_impl::GranSphereDa
         float3 bodyA_force = {0.f, 0.f, 0.f};
         float3 bodyA_AngAcc = {0.f, 0.f, 0.f};
 
-        uint32_t body_A_offset = MAX_SPHERES_TOUCHED_BY_SPHERE * mySphereID;
+        unsigned int body_A_offset = MAX_SPHERES_TOUCHED_BY_SPHERE * mySphereID;
         // for each sphere contacting me, compute the forces
         unsigned int nContactsInvolvingBodyA = sphere_data->nCollisionsForEachBody[mySphereID];
-        for (uint8_t contact_id = 0; contact_id < nContactsInvolvingBodyA; contact_id++) {
-            uint32_t theirSphereID = sphere_data->contact_partners_map[body_A_offset + contact_id];
-
+        for (unsigned int contact_id = 0; contact_id < nContactsInvolvingBodyA; contact_id++) {
+            unsigned int theirSphereID = sphere_data->contact_partners_map[body_A_offset + contact_id];
+#ifdef DEBUG
             if (theirSphereID >= nSpheres) {
                 ABORTABORTABORT("Invalid other sphere id found for sphere %u at slot %u, other is %u\n", mySphereID,
                                 contact_id, theirSphereID);
             }
+#endif
 
             unsigned int theirOwnerSD = sphere_data->sphere_owner_SDs[theirSphereID];
             int3 their_pos = make_int3(sphere_data->sphere_local_pos_X[theirSphereID],
@@ -847,8 +935,7 @@ static __global__ void computeSphereForces_frictionless(ChSystemGpu_impl::GranSp
                                                         BC_type* bc_type_list,
                                                         BC_params_t<int64_t, int64_t3>* bc_params_list,
                                                         unsigned int nBCs) {
-    
-    __shared__ int3 sphere_pos[MAX_COUNT_OF_SPHERES_PER_SD]; ///< store positions relative to *THIS* SD
+    __shared__ int3 sphere_pos[MAX_COUNT_OF_SPHERES_PER_SD];  ///< store positions relative to *THIS* SD
     __shared__ float3 sphere_vel[MAX_COUNT_OF_SPHERES_PER_SD];
     __shared__ not_stupid_bool sphere_fixed[MAX_COUNT_OF_SPHERES_PER_SD];
     __shared__ unsigned int absoluteSphereID[MAX_COUNT_OF_SPHERES_PER_SD];
@@ -875,14 +962,14 @@ static __global__ void computeSphereForces_frictionless(ChSystemGpu_impl::GranSp
 
     // Bring in data from global into shmem. Only a subset of threads get to do this.
     // Note that we're not using shared memory very heavily.
-    if (bodyA < spheresTouchingThisSD) {        
+    if (bodyA < spheresTouchingThisSD) {
         unsigned int offset_in_composite_Array = sphere_data->SD_SphereCompositeOffsets[thisSD] + bodyA;
         mySphereID = sphere_data->spheres_in_SD_composite[offset_in_composite_Array];
         absoluteSphereID[bodyA] = mySphereID;
         sphere_pos[bodyA] =
             make_int3(sphere_data->sphere_local_pos_X[mySphereID], sphere_data->sphere_local_pos_Y[mySphereID],
                       sphere_data->sphere_local_pos_Z[mySphereID]);
-                 
+
         unsigned int sphere_owner_SD = sphere_data->sphere_owner_SDs[mySphereID];
         // if this SD doesn't own that sphere, add an offset to account
         if (sphere_owner_SD != thisSD) {
@@ -900,7 +987,7 @@ static __global__ void computeSphereForces_frictionless(ChSystemGpu_impl::GranSp
     // Force generated on this sphere
 
     if (bodyA < spheresTouchingThisSD) {
-        float3 bodyA_force = {0.f, 0.f, 0.f}; // variable in which we accumulate all the forces acting of sphere A
+        float3 bodyA_force = {0.f, 0.f, 0.f};  // variable in which we accumulate all the forces acting of sphere A
 
         for (unsigned char bodyB = 0; bodyB < spheresTouchingThisSD; bodyB++) {
             if (bodyA == bodyB || (sphere_fixed[bodyA] && sphere_fixed[bodyB])) {
@@ -916,8 +1003,11 @@ static __global__ void computeSphereForces_frictionless(ChSystemGpu_impl::GranSp
 
             // register this valid contact event with body A. It's ok to do it since A and B touch each other, and
             // the contact point is in this SD. This mem ops are quick, mostly involved shMem (with the exception of the
-            // atomicAdd)
-            unsigned int sphereB_sysID = absoluteSphereID[bodyB];           
+            // atomicAdd).
+            // NOTE: in reality, this pairing is not needed for frictionless spheres to compute the normal force
+            // (actually, see below how it's computed). However, this information is needed if one asks for the total
+            // number of contacts in the system
+            unsigned int sphereB_sysID = absoluteSphereID[bodyB];
             ncontacts = atomicAdd(sphere_data->nCollisionsForEachBody + mySphereID, 1);  // *OLD* # of contacts!!!
             sphere_data->contact_partners_map[ncontacts] = sphereB_sysID;
 #ifdef DEBUG
@@ -1086,9 +1176,9 @@ static __global__ void integrateSpheres(const float stepsize_SU,
  * Integrate angular accelerations. Called only when friction is on
  */
 static __global__ void updateAngVels(const float stepsize_SU,
-                                            ChSystemGpu_impl::GranSphereDataPtr sphere_data,
-                                            unsigned int nSpheres,
-                                            ChSystemGpu_impl::GranParamsPtr gran_params) {
+                                     ChSystemGpu_impl::GranSphereDataPtr sphere_data,
+                                     unsigned int nSpheres,
+                                     ChSystemGpu_impl::GranParamsPtr gran_params) {
     // Figure which sphereID this thread handles. We work with a 1D block structure and a 1D grid structure
     unsigned int mySphereID = threadIdx.x + blockIdx.x * blockDim.x;
 

@@ -167,7 +167,7 @@ class ChSystemGpu_impl {
 
         /// method used to return pointer that stores information related to the how the friction history looked at the
         /// previous time step.
-        inline unsigned int* get_old_partners_map() {
+        inline unsigned int* get_old_partners_map() const {
             return (contact_partners_map == contact_partners_mapEVEN ? contact_partners_mapODD
                                                                      : contact_partners_mapEVEN);
         }
@@ -183,7 +183,7 @@ class ChSystemGpu_impl {
 
         /// method used to return pointer that stores information related to the how the friction history looked at the
         /// previous time step.
-        float3* get_old_historyFriction() {
+        float3* get_old_historyFriction() const {
             return (contact_history_map == contact_history_mapEVEN ? contact_history_mapODD : contact_history_mapEVEN);
         }
 
