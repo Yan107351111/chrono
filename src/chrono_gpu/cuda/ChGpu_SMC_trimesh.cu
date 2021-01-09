@@ -466,27 +466,24 @@ __global__ void interactionTerrain_TriangleSoup(
 }  // end kernel
 
 __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
-    // Figure our the number of blocks that need to be launched to cover the box
-    unsigned int nBlocks = (nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
 
-    // Number of blocks required to tend to curating friction history
-    unsigned int nBlocksFrictionHistory =
-        (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
-    seedFrictionHistory<<<nBlocksFrictionHistory, CUDA_THREADS_PER_BLOCK>>>(nSpheres, sphere_data);
-    gpuErrchk(cudaPeekAtLastError());
-    gpuErrchk(cudaDeviceSynchronize());
+    packSphereDataPointers();  // DN: I believe this can be done once, during the Init phase
 
     // Set up simulation loop.
     float duration_SU = (float)(duration / TIME_SU2UU);
     unsigned int nsteps = (unsigned int)std::round(duration_SU / stepSize_SU);
 
-    packSphereDataPointers();
-    // cudaMemAdvise(gran_params, sizeof(*gran_params), cudaMemAdviseSetReadMostly, dev_ID);
-
     METRICS_PRINTF("advancing by %f at timestep %f, %u timesteps at approx user timestep %f\n", duration_SU,
                    stepSize_SU, nsteps, duration / nsteps);
 
     METRICS_PRINTF("Starting Main Simulation loop!\n");
+
+    // Figure our the number of blocks that need to be launched to cover the box
+    unsigned int nBlocks = (nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
+    // Number of blocks to opearte on the micro-displacement tangential history
+    unsigned int nBlocksFrictionHistory =
+        (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
+
 
     float time_elapsed_SU = 0;  // time elapsed in this call (SU)
     // Run the simulation, there are aggressive synchronizations because we want to have no race conditions

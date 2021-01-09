@@ -303,7 +303,18 @@ __host__ void ChSystemGpu_impl::setupSphereDataStructures() {
         TRACK_VECTOR_RESIZE(contact_history_mapODD, 12 * nSpheres, "contact_history_mapODD", null_history);
     }
     TRACK_VECTOR_RESIZE(nCollisionsForEachBody, nSpheres, "nCollisionsForEachBody", 0);
-    
+
+    // Set friction history to "pristine"
+    gpuErrchk(cudaDeviceSynchronize());
+    unsigned int nBlocksFrictionHistory =
+        (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
+    seedFrictionHistory<<<nBlocksFrictionHistory, CUDA_THREADS_PER_BLOCK>>>(
+        nSpheres, nCollisionsForEachBody.data(), contact_partners_mapEVEN.data(), contact_partners_mapODD.data(),
+        contact_history_mapEVEN.data(), contact_history_mapODD.data());
+    gpuErrchk(cudaPeekAtLastError());
+    gpuErrchk(cudaDeviceSynchronize());
+
+   
     // record normal contact force
     if (gran_params->recording_contactInfo == true) {
         float3 null_force = {0.f, 0.f, 0.f};
@@ -472,7 +483,6 @@ __host__ double ChSystemGpu_impl::AdvanceSimulation(float duration) {
     // Number of blocks required to tend to curating friction history
     unsigned int nBlocksFrictionHistory =
         (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
-    seedFrictionHistory<<<nBlocksFrictionHistory, CUDA_THREADS_PER_BLOCK>>>(nSpheres, sphere_data);
 
     // Set up simulation loop
     float duration_SU = (float)(duration / TIME_SU2UU);

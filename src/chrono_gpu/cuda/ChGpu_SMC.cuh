@@ -715,21 +715,26 @@ static __global__ void curateFrictionHistoryAposteriori(unsigned int nSpheres,
 /// <param name="nSpheres">number of spheres in the sim</param>
 /// <param name="sphere_data">datastructure that holds all the pointers to system data</param>
 /// <returns></returns>
-static __global__ void seedFrictionHistory(unsigned int nSpheres, ChSystemGpu_impl::GranSphereDataPtr sphere_data) {
+static __global__ void seedFrictionHistory(unsigned int nSpheres,
+                                           unsigned int* nCollisionsForEachBody,
+                                           unsigned int* contact_partners_mapEVEN,
+                                           unsigned int* contact_partners_mapODD,
+                                           float3* contact_history_mapEVEN,
+                                           float3* contact_history_mapODD) {
     unsigned int offset = threadIdx.x + blockIdx.x * blockDim.x;
 
     // reset the number of active contacts for each body to zero
     if (offset < nSpheres)
-        sphere_data->nCollisionsForEachBody[offset] = 0;
+        nCollisionsForEachBody[offset] = 0;
 
     // clean up all the contact partners bodies; set to illegal value
     // zero out the tangential micro-deformation at the point of contact
     unsigned int sizeContactPairsArray = MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres;
     if (offset < sizeContactPairsArray) {
-        sphere_data->contact_partners_mapEVEN[offset] = NULL_CHGPU_ID;
-        sphere_data->contact_partners_mapODD[offset] = NULL_CHGPU_ID;
-        sphere_data->contact_history_mapEVEN[offset] = make_float3(0.f, 0.f, 0.f);
-        sphere_data->contact_history_mapODD[offset] = make_float3(0.f, 0.f, 0.f);
+        contact_partners_mapEVEN[offset] = NULL_CHGPU_ID;
+        contact_partners_mapODD[offset] = NULL_CHGPU_ID;
+        contact_history_mapEVEN[offset] = make_float3(0.f, 0.f, 0.f);
+        contact_history_mapODD[offset] = make_float3(0.f, 0.f, 0.f);
     }
 }
 /// Compute normal forces for a contacting pair
