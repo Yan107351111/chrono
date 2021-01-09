@@ -699,8 +699,8 @@ static __global__ void curateFrictionHistoryAposteriori(unsigned int nSpheres,
     if (offset < nSpheres)
         nCollisionsForEachBody[offset] = 0;
 
-    // clean up all the contact partners bodies; set to illegal value
-    // zero out the tangential micro-deformation at the point of contact
+    // Clean up all the contact partners bodies; set each partner body index to illegal value.
+    // Zero out the tangential micro-deformation at the point of contact
     unsigned int sizeContactPairsArray = MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres;
     if (offset < sizeContactPairsArray) {
         contact_partners_map[offset] = NULL_CHGPU_ID;

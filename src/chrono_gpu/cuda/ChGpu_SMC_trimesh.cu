@@ -473,6 +473,8 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
     unsigned int nBlocksFrictionHistory =
         (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
     seedFrictionHistory<<<nBlocksFrictionHistory, CUDA_THREADS_PER_BLOCK>>>(nSpheres, sphere_data);
+    gpuErrchk(cudaPeekAtLastError());
+    gpuErrchk(cudaDeviceSynchronize());
 
     // Set up simulation loop.
     float duration_SU = (float)(duration / TIME_SU2UU);
@@ -490,16 +492,12 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
     // Run the simulation, there are aggressive synchronizations because we want to have no race conditions
     for (; time_elapsed_SU < stepSize_SU * nsteps; time_elapsed_SU += stepSize_SU) {
         updateBCPositions();
-
         resetSphereAccelerations();
         resetBCForces();
         if (meshSoup->nTrianglesInSoup != 0 && mesh_collision_enabled) {
             resetTriangleForces();
             resetTriangleBroadphaseInformation();
         }
-
-        gpuErrchk(cudaPeekAtLastError());
-        gpuErrchk(cudaDeviceSynchronize());
 
         METRICS_PRINTF("Starting computeSphereForces!\n");
 
@@ -510,9 +508,9 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
                 (unsigned int)BC_params_list_SU.size());
             gpuErrchk(cudaPeekAtLastError());
             gpuErrchk(cudaDeviceSynchronize());
-        } else if (gran_params->friction_mode == CHGPU_FRICTION_MODE::SINGLE_STEP ||
-                   gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
-            // figure out who is contacting
+        } else {
+            // This scenario is associated with friction, which can be handled in single_step or multi-step fashion.
+            // First, figure out who is contacting whom
             determineContactPairs<<<nSDs, MAX_COUNT_OF_SPHERES_PER_SD>>>(sphere_data, gran_params);
             gpuErrchk(cudaPeekAtLastError());
             gpuErrchk(cudaDeviceSynchronize());
@@ -525,12 +523,8 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
         }
 
         if (meshSoup->nTrianglesInSoup != 0 && mesh_collision_enabled) {
-            gpuErrchk(cudaPeekAtLastError());
-            gpuErrchk(cudaDeviceSynchronize());
             runTriangleBroadphase();
         }
-        gpuErrchk(cudaPeekAtLastError());
-        gpuErrchk(cudaDeviceSynchronize());
 
         if (meshSoup->numTriangleFamilies != 0 && mesh_collision_enabled) {
             // TODO please do not use a template here
@@ -541,20 +535,16 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
             interactionTerrain_TriangleSoup<CUDA_THREADS_PER_BLOCK><<<nSDs, MAX_COUNT_OF_SPHERES_PER_SD>>>(
                 meshSoup, sphere_data, triangles_in_SD_composite.data(), SD_numTrianglesTouching.data(),
                 SD_TriangleCompositeOffsets.data(), gran_params, tri_params, triangleFamilyHistmapOffset);
+            gpuErrchk(cudaPeekAtLastError());
+            gpuErrchk(cudaDeviceSynchronize());
         }
-        gpuErrchk(cudaPeekAtLastError());
-        gpuErrchk(cudaDeviceSynchronize());
 
         METRICS_PRINTF("Resetting broadphase info!\n");
 
         resetBroadphaseInformation();
 
-        gpuErrchk(cudaPeekAtLastError());
-        gpuErrchk(cudaDeviceSynchronize());
-
         METRICS_PRINTF("Starting integrateSpheres!\n");
         integrateSpheres<<<nBlocks, CUDA_THREADS_PER_BLOCK>>>(stepSize_SU, sphere_data, nSpheres, gran_params);
-
         gpuErrchk(cudaPeekAtLastError());
         gpuErrchk(cudaDeviceSynchronize());
 
@@ -577,14 +567,8 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
             gpuErrchk(cudaDeviceSynchronize());
         }
 
-
-
         runSphereBroadphase();
-
         packSphereDataPointers();
-
-        gpuErrchk(cudaPeekAtLastError());
-        gpuErrchk(cudaDeviceSynchronize());
         elapsedSimTime += (float)(stepSize_SU * TIME_SU2UU);  // Advance current time
     }
 
