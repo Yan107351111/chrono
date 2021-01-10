@@ -484,6 +484,7 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
     unsigned int nBlocksFrictionHistory =
         (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
 
+    // dropped here for GPU debugging purposes
     unsigned int* junkContactMap = new unsigned int[MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres];
     unsigned int* junkNcontactPerSphere = new unsigned int[nSpheres];
     float3* junkHistoryMicroDisplacements = new float3[MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres];
@@ -516,7 +517,7 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
             gpuErrchk(cudaPeekAtLastError());
             gpuErrchk(cudaDeviceSynchronize());
            
-            // junk stuff
+            // debug stuff
             gpuErrchk(cudaMemcpy(junkContactMap, sphere_data->contact_partners_map,
                                  nSpheres * MAX_SPHERES_TOUCHED_BY_SPHERE* sizeof(unsigned int),
                                  cudaMemcpyDeviceToHost));

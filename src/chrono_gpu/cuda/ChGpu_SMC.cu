@@ -482,6 +482,11 @@ __host__ void ChSystemGpu_impl::updateBCPositions() {
 }
 
 __host__ double ChSystemGpu_impl::AdvanceSimulation(float duration) {
+    // dropped here for GPU debugging purposes
+    unsigned int* junkContactMap = new unsigned int[MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres];
+    unsigned int* junkNcontactPerSphere = new unsigned int[nSpheres];
+    float3* junkHistoryMicroDisplacements = new float3[MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres];
+
     // Figure our the number of blocks that need to be launched to cover the box
     unsigned int nBlocks = (nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
 
@@ -519,6 +524,14 @@ __host__ double ChSystemGpu_impl::AdvanceSimulation(float duration) {
                 (unsigned int)BC_params_list_SU.size());
             gpuErrchk(cudaPeekAtLastError());
             gpuErrchk(cudaDeviceSynchronize());
+            // debug stuff
+            gpuErrchk(cudaMemcpy(junkNcontactPerSphere, sphere_data->nCollisionsForEachBody,
+                                 nSpheres * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+            gpuErrchk(cudaMemcpy(junkContactMap, sphere_data->contact_partners_map,
+                                 nSpheres * MAX_SPHERES_TOUCHED_BY_SPHERE * sizeof(unsigned int),
+                                 cudaMemcpyDeviceToHost));
+
         } else if (gran_params->friction_mode == CHGPU_FRICTION_MODE::SINGLE_STEP ||
                    gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
             // figure out who is contacting
