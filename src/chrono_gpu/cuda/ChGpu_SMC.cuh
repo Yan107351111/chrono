@@ -715,7 +715,8 @@ static __global__ void curateFrictionHistoryAposteriori(unsigned int nSpheres,
 /// <param name="nSpheres">number of spheres in the sim</param>
 /// <param name="sphere_data">datastructure that holds all the pointers to system data</param>
 /// <returns></returns>
-static __global__ void seedFrictionHistory(unsigned int nSpheres,
+static __global__ void seedFrictionHistory(bool multiStepFricIsON,
+                                           unsigned int nSpheres,
                                            unsigned int* nCollisionsForEachBody,
                                            unsigned int* contact_partners_mapEVEN,
                                            unsigned int* contact_partners_mapODD,
@@ -732,9 +733,11 @@ static __global__ void seedFrictionHistory(unsigned int nSpheres,
     unsigned int sizeContactPairsArray = MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres;
     if (offset < sizeContactPairsArray) {
         contact_partners_mapEVEN[offset] = NULL_CHGPU_ID;
-        contact_partners_mapODD[offset] = NULL_CHGPU_ID;
-        contact_history_mapEVEN[offset] = make_float3(0.f, 0.f, 0.f);
-        contact_history_mapODD[offset] = make_float3(0.f, 0.f, 0.f);
+        if (multiStepFricIsON) {
+            contact_partners_mapODD[offset] = NULL_CHGPU_ID;
+            contact_history_mapEVEN[offset] = make_float3(0.f, 0.f, 0.f);
+            contact_history_mapODD[offset] = make_float3(0.f, 0.f, 0.f);
+        }
     }
 }
 /// Compute normal forces for a contacting pair

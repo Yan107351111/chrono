@@ -292,25 +292,30 @@ __host__ void ChSystemGpu_impl::setupSphereDataStructures() {
         }
     }
 
-    if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP ||
-        gran_params->friction_mode == CHGPU_FRICTION_MODE::SINGLE_STEP) {
-        TRACK_VECTOR_RESIZE(contact_partners_mapEVEN, 12 * nSpheres, "contact_partners_mapEVEN", NULL_CHGPU_ID);
-        TRACK_VECTOR_RESIZE(contact_partners_mapODD, 12 * nSpheres, "contact_partners_mapODD", NULL_CHGPU_ID);
-    }
+    // if friction is multi-step, then we need to have storage for the old history; needed to compute the friction
+    // force. We also need information about who contacted whom, from where the extra "contact_partners_mapODD" array
     if (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP) {
+        TRACK_VECTOR_RESIZE(contact_partners_mapODD, 12 * nSpheres, "contact_partners_mapODD", NULL_CHGPU_ID);
         float3 null_history = {0.f, 0.f, 0.f};
-        TRACK_VECTOR_RESIZE(contact_history_mapEVEN, 12 * nSpheres, "contact_history_mapEven", null_history);
         TRACK_VECTOR_RESIZE(contact_history_mapODD, 12 * nSpheres, "contact_history_mapODD", null_history);
+        TRACK_VECTOR_RESIZE(contact_history_mapEVEN, 12 * nSpheres, "contact_history_mapEven", null_history);
+        sphere_data->contact_history_map = contact_history_mapEVEN.data(); // the very first choice is to point to EVEN
     }
+    // in general, the "EVEN" array is the one that is used always: frictionless, one step friction, multi-step friction
+    TRACK_VECTOR_RESIZE(contact_partners_mapEVEN, 12 * nSpheres, "contact_partners_mapEVEN", NULL_CHGPU_ID);
+    sphere_data->contact_partners_map = contact_partners_mapEVEN.data();
     TRACK_VECTOR_RESIZE(nCollisionsForEachBody, nSpheres, "nCollisionsForEachBody", 0);
+    sphere_data->nCollisionsForEachBody = nCollisionsForEachBody.data();
 
+    
     // Set friction history to "pristine"
     gpuErrchk(cudaDeviceSynchronize());
+    bool multiStepFricIsOn = (gran_params->friction_mode == CHGPU_FRICTION_MODE::MULTI_STEP);
     unsigned int nBlocksFrictionHistory =
         (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
     seedFrictionHistory<<<nBlocksFrictionHistory, CUDA_THREADS_PER_BLOCK>>>(
-        nSpheres, nCollisionsForEachBody.data(), contact_partners_mapEVEN.data(), contact_partners_mapODD.data(),
-        contact_history_mapEVEN.data(), contact_history_mapODD.data());
+        multiStepFricIsOn, nSpheres, nCollisionsForEachBody.data(), contact_partners_mapEVEN.data(),
+        contact_partners_mapODD.data(), contact_history_mapEVEN.data(), contact_history_mapODD.data());
     gpuErrchk(cudaPeekAtLastError());
     gpuErrchk(cudaDeviceSynchronize());
 

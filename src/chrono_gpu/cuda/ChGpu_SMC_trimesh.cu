@@ -484,6 +484,10 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
     unsigned int nBlocksFrictionHistory =
         (MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres + CUDA_THREADS_PER_BLOCK - 1) / CUDA_THREADS_PER_BLOCK;
 
+    unsigned int* junkContactMap = new unsigned int[MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres];
+    unsigned int* junkNcontactPerSphere = new unsigned int[nSpheres];
+    float3* junkHistoryMicroDisplacements = new float3[MAX_SPHERES_TOUCHED_BY_SPHERE * nSpheres];
+
 
     float time_elapsed_SU = 0;  // time elapsed in this call (SU)
     // Run the simulation, there are aggressive synchronizations because we want to have no race conditions
@@ -511,7 +515,15 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
             determineContactPairs<<<nSDs, MAX_COUNT_OF_SPHERES_PER_SD>>>(sphere_data, gran_params);
             gpuErrchk(cudaPeekAtLastError());
             gpuErrchk(cudaDeviceSynchronize());
+           
+            // junk stuff
+            gpuErrchk(cudaMemcpy(junkContactMap, sphere_data->contact_partners_map,
+                                 nSpheres * MAX_SPHERES_TOUCHED_BY_SPHERE* sizeof(unsigned int),
+                                 cudaMemcpyDeviceToHost));
 
+            gpuErrchk(cudaMemcpy(junkNcontactPerSphere, sphere_data->nCollisionsForEachBody,
+                                 nSpheres * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+          
             computeSphereContactForces<<<nBlocks, CUDA_THREADS_PER_BLOCK>>>(
                 sphere_data, gran_params, BC_type_list.data(), BC_params_list_SU.data(),
                 (unsigned int)BC_params_list_SU.size(), nSpheres);
@@ -568,6 +580,10 @@ __host__ double ChSystemGpuMesh_impl::AdvanceSimulation(float duration) {
         packSphereDataPointers();
         elapsedSimTime += (float)(stepSize_SU * TIME_SU2UU);  // Advance current time
     }
+
+    delete[] junkContactMap;
+    delete[] junkNcontactPerSphere;
+    delete[] junkHistoryMicroDisplacements;
 
     return time_elapsed_SU * TIME_SU2UU;  // return elapsed UU time
 }
